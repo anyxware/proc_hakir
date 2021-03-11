@@ -1,6 +1,5 @@
 #include <windows.h>
 #include <tlhelp32.h>
-#include <tchar.h>
 #include <winbase.h>
 #include <psapi.h>
 #include <stdio.h>
@@ -18,7 +17,7 @@ typedef struct{
     float kBytes;
     PROCESS_MEMORY_COUNTERS pmc; // pmc.PagefileUsage/1024.0/1024.0
     int pmc_flag;
-    TCHAR  infoBuf[32767];
+    char  infoBuf[32767];
     int infoBuf_flag;
     char* processDescription;
     int OpenProcess_flag;
@@ -46,11 +45,10 @@ BOOL SetPrivilege(
     LUID luid;
 
     if ( !LookupPrivilegeValue(
-            NULL,            // lookup privilege on local system
-            lpszPrivilege,   // privilege to lookup
-            &luid ) )        // receives LUID of privilege
+            NULL,
+            lpszPrivilege,
+            &luid ) )
     {
-        //printf("LookupPrivilegeValue error: %u\n", GetLastError() );
         return FALSE;
     }
     tp.PrivilegeCount = 1;
@@ -66,7 +64,7 @@ BOOL SetPrivilege(
             sizeof(TOKEN_PRIVILEGES),
             (PTOKEN_PRIVILEGES) NULL,
             (PDWORD) NULL) ){
-        //printf("AdjustTokenPrivileges error: %u\n", GetLastError() );
+        printf("AdjustTokenPrivileges error: %u\n", GetLastError() );
         return FALSE;
     }
     if (GetLastError() == ERROR_NOT_ALL_ASSIGNED){
@@ -115,7 +113,7 @@ void print_data(LIST* Data, ProcessorDATA processorData){
     while(ptr){
         count -= -1;
         data = (ProcessDATA*)(ptr->data);
-        printf("%d\t%s\t", data->pe32.th32ProcessID,data->pe32.szExeFile);
+        printf("%lu\t%s\t", data->pe32.th32ProcessID,data->pe32.szExeFile);
         if(!(data->OpenProcess_flag)){
             printf("cant OpenProcess\n");
             ptr = ptr->next;
@@ -135,7 +133,7 @@ void print_data(LIST* Data, ProcessorDATA processorData){
     printf("\n");
 }
 
-char* description(char* filename){
+char* description(const char* filename){
     int versionInfoSize = GetFileVersionInfoSizeA(filename, NULL);
     if (!versionInfoSize) {
         return NULL;
@@ -148,7 +146,7 @@ char* description(char* filename){
     UINT aLen;
     VerQueryValue(versionInfo, TEXT("\\VarFileInfo\\Translation"),
                   (LPVOID *) &langCodeArray, &aLen);
-    TCHAR subBlock[25];
+    char subBlock[25];
     wsprintf(subBlock, TEXT("\\StringFileInfo\\%04x%04x\\FileDescription"),
             LOWORD(langCodeArray[0]), HIWORD(langCodeArray[0]));
     UINT bufLen;
@@ -164,10 +162,10 @@ void GETCpuUsage(ProcessorDATA* processorData){
     float dProcessorTime, dIdleTime;
     float cpuUsage;
     FILETIME idleTime, kernelTime, userTime;
-    MEMORYSTATUSEX statex;
+    MEMORYSTATUSEX memorystatusex;
 
-    statex.dwLength = sizeof (statex);
-    GlobalMemoryStatusEx (&statex);
+    memorystatusex.dwLength = sizeof (memorystatusex);
+    GlobalMemoryStatusEx (&memorystatusex);
 
     GetSystemTimes(&idleTime, &kernelTime, &userTime);
 
@@ -180,8 +178,8 @@ void GETCpuUsage(ProcessorDATA* processorData){
     cpuUsage = (dProcessorTime ? 1.0f - dIdleTime/dProcessorTime : 0) * 100;
 
     processorData->cpuUsage = cpuUsage;
-    processorData->memoryUsage = statex.ullTotalPhys - statex.ullAvailPhys;
-    processorData->memoryTotal = statex.ullTotalPhys;
+    processorData->memoryUsage = (float)memorystatusex.ullTotalPhys - memorystatusex.ullAvailPhys;
+    processorData->memoryTotal = memorystatusex.ullTotalPhys;
     processorData->count = 0;
     processorData->dProcessorTime = dProcessorTime;
     processorData->prevProcessorTime = intProcessorTime;
@@ -193,13 +191,13 @@ void process_info(HANDLE hProcess, ProcessDATA* processData, ProcessorDATA* proc
     unsigned long long TotalBytes;
     float dProcessTime;
     float load;
-    float Bytes;
+    float bytes;
     FILETIME CreationTime, ExitTime, KernelTime, UserTime;
     IO_COUNTERS IoCounters;
     PROCESS_MEMORY_COUNTERS pmc;
-    TCHAR  infoBuf[32767];
+    char  infoBuf[32767];
     DWORD  bufCharCount = 32767;
-    TCHAR szModName[MAX_PATH];
+    char szModName[MAX_PATH];
 
     if(GetProcessTimes(hProcess, &CreationTime, &ExitTime, &KernelTime, &UserTime)) {
         intProcessTime = FileTimeToInt64(KernelTime) + FileTimeToInt64(UserTime);
@@ -209,17 +207,17 @@ void process_info(HANDLE hProcess, ProcessDATA* processData, ProcessorDATA* proc
         processData->prevProcessTime = intProcessTime;
     }
     else{
-        processData->load = 666;
+        processData->load = 0;
     }
     if(GetProcessIoCounters(hProcess, &IoCounters)){
         TotalBytes = IoCounters.ReadTransferCount + IoCounters.WriteTransferCount;
-        Bytes = (TotalBytes - processData->prevTotalBytes);
+        bytes = (float)(TotalBytes - processData->prevTotalBytes);
 
-        processData->kBytes = Bytes / 1024.0;
+        processData->kBytes = bytes / 1024.0;
         processData->prevTotalBytes = TotalBytes;
     }
     else{
-        processData->kBytes = 666;
+        processData->kBytes = 0;
     }
     if(GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))){
         processData->pmc = pmc;
@@ -248,8 +246,9 @@ void process_info(HANDLE hProcess, ProcessDATA* processData, ProcessorDATA* proc
 void update_list(LIST* Data, ProcessorDATA* processorData, int status){
     PROCESSENTRY32 pe32;
     pe32.dwSize = sizeof( PROCESSENTRY32 );
-    HANDLE hProcessSnap, hProcess, hToken;
+    HANDLE hProcessSnap, hProcess;
     ProcessDATA* nowData;
+    int k = 0;
     hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hProcessSnap == INVALID_HANDLE_VALUE) {
         CloseHandle(hProcessSnap);
@@ -261,10 +260,7 @@ void update_list(LIST* Data, ProcessorDATA* processorData, int status){
     }
     do {
         processorData->count += 1;
-        hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pe32.th32ProcessID);
-        OpenProcessToken(hProcess, TOKEN_ADJUST_PRIVILEGES, &hToken);
-        SetPrivilege(hToken, TEXT("SeDebugPrivilege"), TRUE);
-        //DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenPrimary, &hProcess);
+        hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe32.th32ProcessID);
         nowData = (ProcessDATA*)in_list(Data, pe32.th32ProcessID);
         if(!nowData){
             ProcessDATA newData;
@@ -282,26 +278,33 @@ void update_list(LIST* Data, ProcessorDATA* processorData, int status){
             process_info(hProcess, nowData, processorData);
         }
         else{
+            printf("%s\n", pe32.szExeFile);
             nowData->OpenProcess_flag = 0;
+            k++;
         }
-        //CloseHandle(hToken);
-        CloseHandle(hProcess);\
+        CloseHandle(hProcess);
     } while (Process32Next(hProcessSnap, &pe32));
     CloseHandle(hProcessSnap);
     delete_unused(Data, status);
+    printf("%d", k);
 }
 
 int main(void){
     int status = 1;
     ProcessorDATA processorData;
     LIST* processData = list_init();
-    for (int i = 0; i < 200; i++){
+    HANDLE hToken;
+    OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &hToken);
+    SetPrivilege(hToken, TEXT("SeDebugPrivilege"), TRUE);
+    for (int i = 0; i < 2; i++){
         GETCpuUsage(&processorData);
         update_list(processData, &processorData, status);
+        t("-------------------------------------------");
         print_data(processData, processorData);
         status *= -1;
         Sleep(1000);
     }
+    CloseHandle(hToken);
     list_clear(processData);
     return 0;
 }
